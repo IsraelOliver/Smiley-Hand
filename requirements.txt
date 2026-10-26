@@ -1,0 +1,4 @@
+# Apenas um pacote OpenCV: MediaPipe já depende da variante contrib.
+mediapipe==1.1.1
+opencv-contrib-python==4.13.0.92
+numpy>=2.3,<3
