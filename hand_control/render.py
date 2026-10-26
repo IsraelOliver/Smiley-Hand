@@ -3,6 +3,8 @@
 from .gestures import diagnose
 from .virtual_led import LedState
 from .volume_control import VolumeState
+from .mouse_control import MouseState
+import sys
 
 DEFAULT_DISPLAY_SIZE = (960, 720)
 
@@ -34,7 +36,7 @@ def display_layout(source_size, display_size):
     width, height = display_size
     source_width, source_height = source_size
     header = min(height // 3, max(1, round(height * 0.30)))
-    footer = min(height // 3, max(1, round(height * 0.20)))
+    footer = min(height // 3, max(1, round(height * 0.32)))
     available_height = max(1, height - header - footer)
     scale = min(width / source_width, available_height / source_height)
     image_width = max(1, round(source_width * scale))
@@ -96,6 +98,7 @@ def draw_volume_panel(canvas, state: VolumeState, footer: int, ui_scale: float):
 
     height, width = canvas.shape[:2]
     top = height - footer
+    footer *= 0.57  # Reserva a parte inferior para o painel do mouse e as teclas.
     margin = max(1, round(22 * ui_scale))
     text_width = max(1, width - 2 * margin)
     percent = f"{state.percent:.0f}%" if state.percent is not None else "--"
@@ -127,9 +130,41 @@ def draw_volume_panel(canvas, state: VolumeState, footer: int, ui_scale: float):
               (90, 195, 255) if state.error else (185, 195, 205), text_width)
 
 
+def draw_mouse_panel(canvas, state: MouseState, footer, ui_scale):
+    height, width = canvas.shape[:2]
+    top = height - footer
+    margin = max(1, round(22 * ui_scale))
+    text_width = max(1, width - 2 * margin)
+    position = str(state.position) if state.position is not None else "--"
+    label = f"MOUSE: {'ATIVADO' if state.active else 'DESATIVADO'} | Cursor: {position}"
+    if not state.permitted:
+        label = "MOUSE: DESATIVADO (--no-mouse-control)"
+    _put_text(canvas, label, (margin, round(top + footer * 0.64)),
+              0.6 * ui_scale, max(1, round(ui_scale)), (150, 230, 255), text_width)
+    detail = f"Mouse: {state.error}" if state.error else f"Estado: {state.status}"
+    if state.screen_size is not None:
+        detail += f" | Tela: {state.screen_size[0]}x{state.screen_size[1]}"
+    _put_text(canvas, detail, (margin, round(top + footer * 0.75)),
+              0.5 * ui_scale, max(1, round(ui_scale)), (200, 210, 220), text_width)
+    _put_text(canvas, f"Clique: {state.click_status} | {state.click_progress:.0%}",
+              (margin, round(top + footer * 0.85)), 0.5 * ui_scale,
+              max(1, round(ui_scale)), (185, 195, 205), text_width)
+
+
+def draw_mouse_region(view, result, state):
+    import cv2
+
+    height, width = view.shape[:2]
+    margin = state.margin
+    color = (255, 200, 70) if state.active else (100, 110, 120)
+    cv2.rectangle(view, (round((width - 1) * margin), round((height - 1) * margin)),
+                  (round((width - 1) * (1 - margin)), round((height - 1) * (1 - margin))), color, 1)
+
+
 def draw_overlay(frame, result, event, *, display_size=DEFAULT_DISPLAY_SIZE,
-                 threshold=0.6, led_state: LedState = LedState(),
-                 volume_state: VolumeState = VolumeState(enabled=False, error=None)):
+                 threshold=0.6, led_state: LedState | None = None,
+                 volume_state: VolumeState = VolumeState(enabled=False, error=None),
+                 mouse_state: MouseState = MouseState(permitted=False)):
     """Cria uma imagem de apresentação; não altera o quadro usado na inferência."""
     import cv2
     import numpy as np
@@ -146,6 +181,7 @@ def draw_overlay(frame, result, event, *, display_size=DEFAULT_DISPLAY_SIZE,
     ui_scale = max(0.05, min(display_width / 960, display_height / 720))
     line_width = max(1, round(2 * ui_scale))
     radius = max(1, round(4 * ui_scale))
+    draw_mouse_region(view, result, mouse_state)
     for hand in result.hand_landmarks:
         points = [
             (max(0, min(image_width - 1, int(p.x * image_width))),
@@ -175,15 +211,20 @@ def draw_overlay(frame, result, event, *, display_size=DEFAULT_DISPLAY_SIZE,
     # Fonte Hershey do OpenCV não renderiza acentos.
     margin = max(1, round(22 * ui_scale))
     text_width = max(1, display_width - 2 * margin)
-    _put_text(canvas, label, (margin, round(header * 0.16)),
+    _put_text(canvas, label, (margin, round(header * (0.26 if led_state is not None else 0.36))),
               0.85 * ui_scale, max(1, round(2 * ui_scale)), status_color, text_width)
-    _put_text(canvas, raw_label, (margin, round(header * 0.34)),
+    _put_text(canvas, raw_label, (margin, round(header * (0.41 if led_state is not None else 0.60))),
               0.75 * ui_scale, line_width, (245, 245, 245), text_width)
-    _put_text(canvas, limit_label, (margin, round(header * 0.50)),
+    _put_text(canvas, limit_label, (margin, round(header * (0.55 if led_state is not None else 0.83))),
               0.65 * ui_scale, line_width, (185, 195, 205), text_width)
-    draw_led_panel(canvas, led_state, header, ui_scale)
+    system = "Windows" if sys.platform == "win32" else "Linux" if sys.platform.startswith("linux") else sys.platform
+    _put_text(canvas, f"Smiley-Hand 0.5 | {system}", (margin, round(header * 0.12)),
+              0.6 * ui_scale, line_width, (185, 195, 205), text_width)
+    if led_state is not None:
+        draw_led_panel(canvas, led_state, header, ui_scale)
     draw_volume_panel(canvas, volume_state, footer, ui_scale)
-    _put_text(canvas, "Q: sair  |  Arraste a borda para redimensionar",
+    draw_mouse_panel(canvas, mouse_state, footer, ui_scale)
+    _put_text(canvas, "Q: sair | M: mouse | ESC: desativar mouse | Arraste a borda",
               (margin, display_height - max(1, round(footer * 0.08))),
               0.5 * ui_scale, max(1, round(ui_scale)), (185, 195, 205), text_width)
     return canvas

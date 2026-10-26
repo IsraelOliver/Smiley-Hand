@@ -10,6 +10,7 @@ import subprocess
 import time
 
 from .gestures import GestureEvent
+from .backends import create_audio_backend
 
 CONFIRM_SECONDS = 0.400
 REPEAT_SECONDS = 0.700
@@ -131,8 +132,9 @@ class VolumeController:
         self.state = VolumeState(enabled=enabled,
                                  error="Conectando ao audio" if enabled else None)
         self.gate = VolumeGestureGate()
-        self._factory = backend_factory or AudioBackend.detect
+        self._factory = backend_factory or create_audio_backend
         self._backend = None
+        self._worker_backend = None
         self._future = None
         self._delta = None
         self._next_read = 0.0
@@ -141,8 +143,21 @@ class VolumeController:
 
     def _perform(self, delta):
         backend = self._backend or self._factory()
-        percent, command = (backend.read(), None) if delta is None else backend.adjust(delta)
-        return backend, percent, command
+        self._worker_backend = backend
+        try:
+            percent, command = (backend.read(), None) if delta is None else backend.adjust(delta)
+            return backend, percent, command
+        except Exception:
+            self._release_backend()
+            raise
+
+    def _release_backend(self):
+        # COM deve ser liberado na mesma thread que o inicializou.
+        if self._worker_backend is not None:
+            close = getattr(self._worker_backend, "close", None)
+            if close:
+                close()
+            self._worker_backend = None
 
     def _submit(self, delta):
         self._delta = delta
@@ -177,5 +192,6 @@ class VolumeController:
     def close(self):
         self._closed = True
         if self._executor is not None:
-            # Apenas na saída; cada chamada é limitada por COMMAND_TIMEOUT.
-            self._executor.shutdown(wait=True, cancel_futures=True)
+            self._executor.submit(self._release_backend)
+            self._executor.shutdown(wait=True)
+            self._executor = None

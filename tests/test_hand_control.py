@@ -102,6 +102,13 @@ class DiagnosticTests(unittest.TestCase):
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_no_mouse_control_and_mapping_options(self):
+        with patch.object(app, "run") as run:
+            self.assertEqual(main(["--no-mouse-control", "--mouse-margin", "0.2", "--mouse-smoothing", "0.4"]), 0)
+            self.assertFalse(run.call_args.kwargs["mouse_control"])
+            self.assertEqual(run.call_args.kwargs["mouse_margin"], 0.2)
+            self.assertEqual(run.call_args.kwargs["mouse_smoothing"], 0.4)
+
     def test_no_volume_control_flag(self):
         self.assertFalse(parse_args([]).no_volume_control)
         self.assertTrue(parse_args(["--no-volume-control"]).no_volume_control)
@@ -109,12 +116,20 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(main(["--no-volume-control"]), 0)
             self.assertFalse(run.call_args.kwargs["volume_control"])
 
+    def test_low_resource_defaults_and_led_flag(self):
+        args = parse_args([])
+        self.assertEqual((args.width, args.height, args.fps), (320, 240, 15))
+        self.assertFalse(args.enable_virtual_led)
+        self.assertTrue(parse_args(['--enable-virtual-led']).enable_virtual_led)
+
     def test_custom_threshold_from_cli(self):
         self.assertEqual(parse_args(["--threshold", "0.45"]).threshold, 0.45)
 
     def test_rejects_excessive_resolution_fps_and_invalid_threshold(self):
         for args in (["--width", "1280"], ["--height", "720"], ["--fps", "0"],
-                     ["--fps", "60"], ["--threshold", "nan"], ["--camera", "-1"]):
+                     ["--fps", "60"], ["--threshold", "nan"], ["--camera", "-1"],
+                     ["--mouse-margin", "0.5"], ["--mouse-margin", "nan"],
+                     ["--mouse-smoothing", "0"], ["--mouse-smoothing", "nan"]):
             with self.subTest(args=args), redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as error:
                     parse_args(args)
@@ -144,9 +159,12 @@ class CameraTests(unittest.TestCase):
                 open_camera(3, 640, 480, 15)
         capture.release.assert_called_once()
 
-    def run_fake_camera(self, read_result, key=ord("q"), threshold=0.6, volume_enabled=True):
+    def run_fake_camera(self, read_result, key=ord("q"), threshold=0.6, volume_enabled=True, enable_led=False, close_error=False):
         cv2 = MagicMock()
-        cv2.waitKey.return_value = key
+        if isinstance(key, list):
+            cv2.waitKey.side_effect = key
+        else:
+            cv2.waitKey.return_value = key
         cv2.getWindowProperty.return_value = 1
         capture = MagicMock()
         capture.read.return_value = read_result
@@ -158,15 +176,32 @@ class CameraTests(unittest.TestCase):
              patch.object(app, "open_camera", return_value=capture), \
              patch.object(app, "validate_model"), \
              patch.object(app, "HandDetector", return_value=detector), \
+             patch("hand_control.backends.windows_mouse.prepare_dpi"), \
              patch.object(app, "VolumeController") as volume, \
+             patch.object(app, "MouseController") as mouse, \
+             patch.object(app, "VirtualLedController") as led, \
              patch.object(app, "draw_overlay") as overlay:
+            if close_error:
+                mouse.return_value.close.side_effect = RuntimeError('falha de limpeza simulada')
             try:
                 app.run(model_path=Path("fake.task"), camera=0, width=640, height=480,
-                        fps=15, threshold=threshold, sink=sink, volume_control=volume_enabled)
+                        fps=15, threshold=threshold, sink=sink, volume_control=volume_enabled, enable_virtual_led=enable_led)
                 self.assertEqual(overlay.call_args.kwargs["threshold"], threshold)
                 volume.assert_called_once_with(enabled=volume_enabled)
                 volume.return_value.close.assert_called_once()
+                mouse.return_value.close.assert_called_once()
+                self.assertEqual(mouse.call_args.kwargs['permitted'], not enable_led)
+                if enable_led:
+                    led.assert_called_once()
+                    led.return_value.update.assert_called()
+                else:
+                    led.assert_not_called()
+                    self.assertIsNone(overlay.call_args.kwargs['led_state'])
+                if isinstance(key, list):
+                    self.assertEqual([call.args[0] for call in mouse.return_value.handle_key.call_args_list], key)
+                    self.assertEqual(volume.return_value.update.call_count, len(key))
             finally:
+                volume.return_value.close.assert_called_once()
                 capture.release.assert_called_once()
                 detector.close.assert_called_once()
                 cv2.destroyAllWindows.assert_called_once()
@@ -190,6 +225,19 @@ class CameraTests(unittest.TestCase):
     def test_disabled_volume_is_forwarded_to_controller(self):
         frame = SimpleNamespace(shape=(480, 640, 3), size=640 * 480 * 3)
         self.run_fake_camera((True, frame), volume_enabled=False)
+
+    def test_cleanup_continues_after_mouse_close_error(self):
+        frame = SimpleNamespace(shape=(480, 640, 3), size=640 * 480 * 3)
+        with self.assertRaisesRegex(RuntimeError, 'limpeza simulada'):
+            self.run_fake_camera((True, frame), close_error=True)
+
+    def test_led_demo_disables_mouse(self):
+        frame = SimpleNamespace(shape=(480, 640, 3), size=640 * 480 * 3)
+        self.run_fake_camera((True, frame), enable_led=True)
+
+    def test_mouse_keys_preserve_volume_loop_and_exit(self):
+        frame = SimpleNamespace(shape=(480, 640, 3), size=640 * 480 * 3)
+        self.run_fake_camera((True, frame), key=[ord("m"), 27, ord("q")])
 
 
 class ModelTests(unittest.TestCase):

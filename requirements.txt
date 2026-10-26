@@ -1,4 +1,8 @@
-# Apenas um pacote OpenCV: MediaPipe já depende da variante contrib.
+# Dependências comuns (somente uma distribuição OpenCV).
 mediapipe==1.1.1
 opencv-contrib-python==4.13.0.92
 numpy>=2.3,<3
+# Dependências específicas: nunca importar/instalar no outro sistema.
+python-xlib==0.33; sys_platform == "linux"
+pycaw==20260927; sys_platform == "win32"
+comtypes==1.4.17; sys_platform == "win32"

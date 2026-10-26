@@ -8,6 +8,7 @@ from hand_control.gestures import GestureEvent
 from hand_control.render import display_layout, draw_overlay, get_display_size
 from hand_control.virtual_led import LedState
 from hand_control.volume_control import VolumeState
+from hand_control.mouse_control import MouseState
 
 try:
     import cv2
@@ -90,6 +91,14 @@ class RenderTests(unittest.TestCase):
         with patch.object(cv2, "getWindowImageRect", side_effect=cv2.error("unsupported")):
             self.assertEqual(get_display_size("test", (800, 600)), (800, 600))
 
+    def test_led_hidden_by_default_and_version_visible(self):
+        frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        with patch('hand_control.render._put_text') as text:
+            draw_overlay(frame, SimpleNamespace(hand_landmarks=[], gestures=[]), GestureEvent(None, 0, 0))
+        labels = [call.args[1] for call in text.call_args_list]
+        self.assertFalse(any('LED:' in label for label in labels))
+        self.assertTrue(any('Smiley-Hand 0.5' in label for label in labels))
+
     def test_volume_feedback_and_bar(self):
         frame = np.zeros((240, 320, 3), dtype=np.uint8)
         result = SimpleNamespace(hand_landmarks=[], gestures=[])
@@ -116,9 +125,28 @@ class RenderTests(unittest.TestCase):
                         self.assertTrue(any("nenhum acesso" in label for label in labels))
                     if state.percent == 55:
                         _, _, footer = display_layout((320, 240), size)
-                        y = round(size[1] - footer + footer * 0.28)
+                        y = round(size[1] - footer + footer * 0.57 * 0.28)
                         np.testing.assert_array_equal(display[y, size[0] // 4], (255, 185, 75))
                         np.testing.assert_array_equal(display[y, size[0] * 3 // 4], (55, 60, 65))
+
+    def test_mouse_status_distance_and_control_region(self):
+        frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        result = SimpleNamespace(hand_landmarks=[], gestures=[])
+        for size in ((960, 720), (320, 240), (400, 900)):
+            for active in (False, True):
+                with self.subTest(size=size, active=active):
+                    state = MouseState(active=active, status="MOVENDO" if active else "DESATIVADO",
+                                       position=(400, 300), screen_size=(1366, 768), click_progress=0.35, click_status="CONFIRMANDO")
+                    with patch("hand_control.render._put_text") as text:
+                        image = draw_overlay(frame, result, GestureEvent(None, 0, 0),
+                                             display_size=size, mouse_state=state)
+                    labels = [call.args[1] for call in text.call_args_list]
+                    self.assertTrue(any("MOUSE: ATIVADO" in label if active else "MOUSE: DESATIVADO" in label for label in labels))
+                    self.assertTrue(any("(400, 300)" in label for label in labels))
+                    self.assertTrue(any("35%" in label for label in labels))
+                    (left, top, width, height), _, _ = display_layout((320, 240), size)
+                    x, y = left + round((width - 1) * 0.12), top + round((height - 1) * 0.12)
+                    np.testing.assert_array_equal(image[y, x], (255, 200, 70) if active else (100, 110, 120))
 
     def test_led_states_are_visible_in_resized_windows(self):
         frame = np.zeros((240, 320, 3), dtype=np.uint8)
